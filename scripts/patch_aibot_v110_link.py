@@ -19,7 +19,8 @@ if activity.exists():
     raise SystemExit("AibotLinkActivity already exists; refusing to apply twice")
 
 s = home.read_text(encoding="utf-8")
-anchor = '''                JarvisMenuLine("Agent 应用设置", "↗", ink, subtle) {
+anchor = '''                JarvisMenuLine("进入 RikkaHub Agent（聊天与设置）",
+                    "⚙", ink, subtle) {
                     menuOpen = false
                     openChat()
                 }
