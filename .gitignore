@@ -1,0 +1,27 @@
+# Credentials
+.env
+.env.*
+!.env.example
+local.properties
+*.jks
+*.keystore
+*.p12
+*private*.pem
+*owner-token*
+*bridge.json
+# Generated build and runtime
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.gradle/
+.idea/
+build/
+**/build/
+node_modules/
+.DS_Store
+*.log
