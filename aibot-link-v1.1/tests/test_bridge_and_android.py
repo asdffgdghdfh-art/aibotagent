@@ -35,7 +35,7 @@ class JarvisAgentHomeActivity {
                     openChat()
                 }
 }
-''')
+''', encoding='utf-8')
             manifest=src/'app/src/main/AndroidManifest.xml'
             manifest.write_text('''<application>
     <activity android:name=".jarvis.JarvisAgentHomeActivity" />
@@ -48,12 +48,12 @@ signingConfig = signingConfigs.getByName("release")
 ''')
             android=base/'aibot_link/android';android.mkdir(parents=True)
             (android/'AibotLinkActivity.kt').write_bytes((ROOT/'android/AibotLinkActivity.kt').read_bytes())
-            cp=subprocess.run([sys.executable,str(ROOT/'android/patch_aibot_v110.py')],cwd=src,capture_output=True,text=True)
+            cp=subprocess.run([sys.executable,str(ROOT/'android/patch_aibot_v110.py')],cwd=src,capture_output=True,text=True,encoding='utf-8')
             self.assertEqual(cp.returncode,0,cp.stderr+cp.stdout)
-            self.assertIn('我的设备 · Aibot Link',home.read_text())
-            self.assertIn('android:exported="false"',manifest.read_text())
-            self.assertIn('versionCode = 1100',gradle.read_text())
-            self.assertIn('com.jarvis.agent.v104preview',gradle.read_text())
+            self.assertIn('我的设备 · Aibot Link',home.read_text(encoding='utf-8'))
+            self.assertIn('android:exported="false"',manifest.read_text(encoding='utf-8'))
+            self.assertIn('versionCode = 1100',gradle.read_text(encoding='utf-8'))
+            self.assertIn('com.jarvis.agent.v104preview',gradle.read_text(encoding='utf-8'))
             self.assertTrue((home.parent/'AibotLinkActivity.kt').is_file())
             cp2=subprocess.run([sys.executable,str(ROOT/'android/patch_aibot_v110.py')],cwd=src,capture_output=True,text=True)
             self.assertNotEqual(cp2.returncode,0,'Patch must refuse a second unsafe run')
