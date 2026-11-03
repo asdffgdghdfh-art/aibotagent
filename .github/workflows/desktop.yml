@@ -1,0 +1,39 @@
+name: Aibot Desktop Bridge Packages
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'aibot-link-v1.1/**'
+      - 'scripts/package_desktop.py'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            os_name: Windows
+          - runner: macos-15
+            os_name: Mac
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify Aibot Link tests
+        working-directory: aibot-link-v1.1
+        run: python -m unittest discover -s tests -v
+      - name: Package Bridge and local dashboard
+        run: python scripts/package_desktop.py --target "${{ matrix.os_name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aibot-Link-V1.1-${{ matrix.os_name }}
+          path: dist/Aibot-Link-V1.1-${{ matrix.os_name }}.zip
+          if-no-files-found: error
+          retention-days: 30

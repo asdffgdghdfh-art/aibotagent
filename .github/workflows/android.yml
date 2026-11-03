@@ -1,0 +1,174 @@
+name: Aibot Android V1.1 APK
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/android.yml'
+      - 'scripts/**'
+      - 'mascot_v083/**'
+      - 'aibot_link/android/**'
+      - 'README.md'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: aibot-android-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned RikkaHub Agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init src
+          git -C src remote add origin https://github.com/ExTV/rikkahub-agent.git
+          git -C src fetch --depth 1 origin refs/tags/v2.5.1-agent.1
+          git -C src checkout --detach FETCH_HEAD
+          git -C src submodule update --init --recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: '.github/workflows/android.yml'
+      - name: Install Android icon render dependencies
+        run: python -m pip install --disable-pip-version-check 'Pillow>=10,<13' 'CairoSVG>=2.7,<3'
+      - name: Apply reproducible Aibot Android 1.1 patches
+        working-directory: src
+        run: |
+          set -euo pipefail
+          python ../scripts/migrate_agent_v100.py
+          python ../scripts/restore_jarvis_ui_v101.py
+          python ../scripts/polish_jarvis_v102.py
+          python ../scripts/prepare_jarvis_stable_v103.py
+          python ../scripts/prepare_jarvis_fast_signed_v103.py
+          python ../scripts/patch_jarvis_v104_inline_voice.py
+          python ../scripts/patch_aibot_v105.py
+          python ../scripts/patch_aibot_v110_link.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Prepare signing securely (isolated preview when secrets missing)
+        shell: bash
+        env:
+          SIGNING_P12_B64: ${{ secrets.JARVIS_SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_PASSWORD: ${{ secrets.JARVIS_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [[ -n "$SIGNING_P12_B64" && -n "$SIGNING_PASSWORD" ]]; then
+            mode=persistent
+            printf '%s' "$SIGNING_P12_B64" | tr -d '[:space:]' | base64 --decode > "$RUNNER_TEMP/aibot-signing.p12"
+            keytool -list -storetype PKCS12 -keystore "$RUNNER_TEMP/aibot-signing.p12" -alias jarvis -storepass "$SIGNING_PASSWORD" >/dev/null
+          elif [[ -n "$SIGNING_P12_B64" || -n "$SIGNING_PASSWORD" ]]; then
+            echo '::error::Both signing secrets are required, not just one.'
+            exit 1
+          else
+            mode=ephemeral
+            SIGNING_PASSWORD="$(openssl rand -hex 24)"
+            keytool -genkeypair -noprompt -storetype PKCS12 -keystore "$RUNNER_TEMP/aibot-signing.p12" \
+              -storepass "$SIGNING_PASSWORD" -keypass "$SIGNING_PASSWORD" -alias jarvis \
+              -dname 'CN=Aibot CI Preview, OU=Android, O=Open Source' \
+              -keyalg RSA -keysize 2048 -validity 3650 >/dev/null 2>&1
+          fi
+          printf 'AIBOT_SIGNING_MODE=%s\n' "$mode" >> "$GITHUB_ENV"
+          {
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/aibot-signing.p12"
+            printf 'storePassword=%s\n' "$SIGNING_PASSWORD"
+            printf 'keyAlias=jarvis\n'
+            printf 'keyPassword=%s\n' "$SIGNING_PASSWORD"
+            printf 'sdk.dir=%s\n' "$ANDROID_HOME"
+          } > src/local.properties
+          chmod 600 src/local.properties "$RUNNER_TEMP/aibot-signing.p12"
+          python scripts/prepare_public_ci_android.py --help >/dev/null
+      - name: Choose package identity and ARM64 ABI
+        working-directory: src
+        run: python ../scripts/prepare_public_ci_android.py --mode "$AIBOT_SIGNING_MODE"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+      - uses: oven-sh/setup-bun@v2
+      - name: Build pinned Agent web UI
+        working-directory: src/web-ui
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          pnpm build
+      - name: Install Android 37.2 SDK platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager_bin="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager_bin" ]]; then sdkmanager_bin="$(command -v sdkmanager)"; fi
+          yes | "$sdkmanager_bin" --licenses >/dev/null || true
+          "$sdkmanager_bin" --channel=3 'platforms;android-37.2' 'build-tools;37.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Compile Kotlin and Android ARM64 APK
+        shell: bash
+        working-directory: src
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --max-workers=2 \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            -Pkotlin.incremental=false \
+            '-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8' \
+            2>&1 | tee ../aibot-build.log
+      - name: Verify package, certificate, APK integrity
+        shell: bash
+        env:
+          SIGNING_PASSWORD: ${{ secrets.JARVIS_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          apk="$(find src/app/build/outputs/apk/debug -type f -name '*.apk' -size +10M -print -quit)"
+          test -s "$apk"
+          signer="${ANDROID_HOME}/build-tools/37.0.0/apksigner"
+          aapt="${ANDROID_HOME}/build-tools/37.0.0/aapt"
+          "$signer" verify --verbose --print-certs "$apk" | tee aibot-signature-report.txt
+          "$aapt" dump badging "$apk" | grep -E '^package:|^application-label:' | tee aibot-package-report.txt
+          if [[ "$AIBOT_SIGNING_MODE" == persistent ]]; then
+            grep -q "name='com.jarvis.agent'" aibot-package-report.txt
+            expected="$(keytool -exportcert -storetype PKCS12 -alias jarvis -keystore "$RUNNER_TEMP/aibot-signing.p12" -storepass "$SIGNING_PASSWORD" | sha256sum | awk '{print $1}')"
+            actual="$(sed -nE 's/^.*certificate SHA-256 digest: ([[:xdigit:]]+).*$/\1/p' aibot-signature-report.txt | head -1 | tr '[:upper:]' '[:lower:]')"
+            test -n "$actual" && test "$actual" = "$expected"
+            name=Aibot-V1.1-PermanentSigned-ARM64.apk
+          else
+            grep -q "name='com.aibot.agent.ci'" aibot-package-report.txt
+            name=Aibot-V1.1-IndependentCI-ARM64.apk
+          fi
+          cp "$apk" "$name"
+          printf '%s\n' "$name" > aibot-artifact-filename.txt
+          sha256sum "$name" | tee aibot-checksum.txt
+          echo "### Aibot APK build verified" >> "$GITHUB_STEP_SUMMARY"
+          echo "Mode: $AIBOT_SIGNING_MODE. Package info:" >> "$GITHUB_STEP_SUMMARY"
+          cat aibot-package-report.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload verified APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aibot-Android-V1.1-${{ env.AIBOT_SIGNING_MODE }}
+          path: |
+            Aibot-V1.1-*.apk
+            aibot-signature-report.txt
+            aibot-package-report.txt
+            aibot-checksum.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload troubleshooting logs (never signing keys)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aibot-Android-V1.1-Build-Diagnostics
+          path: |
+            aibot-build.log
+            aibot-signature-report.txt
+            aibot-package-report.txt
+          if-no-files-found: ignore
+          retention-days: 7
