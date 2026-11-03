@@ -1,0 +1,61 @@
+name: Publish Aibot APK (Pre-release)
+on:
+  workflow_run:
+    workflows: ["Aibot Android V1.1 APK"]
+    types: [completed]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download verified APK artifacts from completed main-branch build
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          pattern: Aibot-Android-V1.1-*
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          path: release-assets
+      - name: Validate and publish a clearly labeled pre-release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          shopt -s nullglob
+          apks=(Aibot-V1.1-*.apk)
+          if [[ "${#apks[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one verified APK artifact."
+            exit 1
+          fi
+          sha256sum --check aibot-checksum.txt
+          tag="v1.1.0-ci.${RUN_NUMBER}.${RUN_ATTEMPT}"
+          if [[ "${apks[0]}" == *IndependentCI* ]]; then
+            kind="Independent CI preview (ephemeral signing)"
+            warning="Does NOT replace installed Aibot V1.0.5; signing certificate changes on each CI run."
+          else
+            kind="Persistent-signing preview (requires valid private certificate)"
+            warning="Only compatible with installations using that exact certificate and Android package ID."
+          fi
+          {
+            printf '# Aibot V1.1 - %s\n\n' "$kind"
+            printf 'Build: %s, commit: %s\n\n' "$RUN_NUMBER" "$TARGET_SHA"
+            printf 'WARNING: %s\n\n' "$warning"
+            printf 'These are early test artifacts; Android real-device validation and ECS pairing are NOT complete.\n'
+            printf 'Windows/Mac Bridge packages are in Actions -> Aibot Desktop Bridge Packages -> Artifacts.\n'
+          } > /tmp/aibot-release-notes.md
+          gh release create "$tag" "${apks[0]}" aibot-checksum.txt aibot-package-report.txt \
+            --repo "$GH_REPO" --target "$TARGET_SHA" --title "Aibot V1.1 CI ${RUN_NUMBER}" \
+            --prerelease --notes-file /tmp/aibot-release-notes.md
